@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IMU BLE Streamer - Waveshare ESP32-S3</title>
+<style>
+:root {
+  --bg: #0b0f14;
+  --panel: #151b23;
+  --panel2: #1d2631;
+  --border: #2a3a4a;
+  --text: #dce6f0;
+  --text-dim: #7d8b99;
+  --accent: #00e58f;
+  --accent-dim: #0fa36b;
+  --danger: #ff4d4d;
+  --warning: #ffb020;
+  --info: #3aa0ff;
+  --font-mono: 'SF Mono', 'Cascadia Code', Consolas, 'Roboto Mono', monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  min-height: 100vh;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.container { max-width: 1000px; width: 100%; }
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+header h1 {
+  font-size: 20px;
+  color: var(--accent);
+  letter-spacing: 1px;
+  font-weight: 700;
+}
+.conn-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 13px;
+}
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--text-dim); }
+.dot.online { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.dot.offline { background: var(--danger); }
+.grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 860px) { .grid { grid-template-columns: 340px 1fr; } }
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+}
+.panel h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-dim);
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+.btn {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s, transform 0.05s;
+  color: #06120c;
+  margin-bottom: 8px;
+}
+.btn:hover { filter: brightness(1.1); }
+.btn:active { transform: scale(0.98); }
+.btn:disabled { filter: grayscale(0.7) brightness(0.6); cursor: not-allowed; }
+.btn-connect { background: var(--accent); }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-warn { background: var(--warning); }
+.btn-info { background: var(--info); color: #04121f; }
+.btn-ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 13px;
+}
+.stat-row span:first-child { color: var(--text-dim); }
+.stat-row span:last-child { font-weight: 600; }
+.stat-row .good { color: var(--accent); }
+.stat-row .bad { color: var(--danger); }
+.stat-row .warn { color: var(--warning); }
+
+.live-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.ax-val, .ay-val, .az-val, .gx-val, .gy-val, .gz-val {
+  flex: 1;
+  min-width: 130px;
+  background: var(--panel2);
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+  border: 1px solid var(--border);
+}
+.val-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; }
+.val-num { font-size: 20px; font-weight: 700; margin-top: 4px; }
+.val-unit { font-size: 11px; color: var(--text-dim); margin-left: 4px; }
+
+#sparkline { width: 100%; height: 180px; background: var(--panel2); border-radius: 8px; border: 1px solid var(--border); }
+
+.footer { margin-top: 16px; text-align: center; font-size: 11px; color: var(--text-dim); }
+#logArea {
+  background: var(--panel2);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 11px;
+  height: 100px;
+  overflow-y: auto;
+  color: var(--text-dim);
+  margin-top: 10px;
+  border: 1px solid var(--border);
+}
+.log-line { margin: 2px 0; }
+.log-line.err { color: var(--danger); }
+.log-line.warn { color: var(--warning); }
+.log-line.ok { color: var(--accent); }
+.progress { height: 4px; background: var(--panel); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+.progress > div { height: 100%; width: 0; background: var(--accent); transition: width 0.1s; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>IMU BLE Streamer</h1>
+    <div class="conn-badge">
+      <span class="dot offline" id="statusDot"></span>
+      <span id="statusText">Disconnected</span>
+    </div>
+  </header>
+
+  <div class="grid">
+    <div>
+      <div class="panel">
+        <h2>Connection</h2>
+        <button class="btn btn-connect" id="btnConnect">Connect</button>
+        <button class="btn btn-danger" id="btnDisconnect" disabled>Disconnect</button>
+        <div style="height: 10px"></div>
+        <h2>Controls</h2>
+        <button class="btn btn-info" id="btnRefresh">Refresh Data</button>
+        <button class="btn btn-warn" id="btnStart">Start Recording</button>
+        <button class="btn btn-danger" id="btnStop" disabled>Stop Recording</button>
+        <div style="height: 10px"></div>
+        <button class="btn btn-ghost" id="btnDownload" disabled>Download CSV</button>
+        <div style="height: 10px"></div>
+        <h2>SD Sessions (on device)</h2>
+        <button class="btn btn-info" id="btnList" disabled>Refresh Session List</button>
+        <select id="sessSelect" style="width:100%;padding:10px;margin:0 0 8px 0;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;font-family:var(--font-mono);font-size:13px;" disabled></select>
+        <button class="btn btn-ghost" id="btnDl" disabled>Download Session from Device</button>
+        <div class="progress"><div id="dlBar"></div></div>
+      </div>
+
+      <div class="panel" style="margin-top: 16px">
+        <h2>Statistics</h2>
+        <div class="stat-row"><span>BLE State</span><span id="stBle">--</span></div>
+        <div class="stat-row"><span>Recording</span><span id="stRec">--</span></div>
+        <div class="stat-row"><span>Samples received</span><span id="stSamples">0</span></div>
+        <div class="stat-row"><span>Captured in browser</span><span id="stCaptured">0</span></div>
+        <div class="stat-row"><span>SD sessions on device</span><span id="stSess">0</span></div>
+        <div class="stat-row"><span>Packets received</span><span id="stPackets">0</span></div>
+        <div class="stat-row"><span>Packets lost</span><span id="stLost" class="good">0</span></div>
+        <div class="stat-row"><span>Samples dropped on device</span><span id="stDropped" class="good">0</span></div>
+        <div class="stat-row"><span>Packet loss %</span><span id="stLossPct" class="good">0.00</span></div>
+        <div class="stat-row"><span>Sample rate</span><span id="stRate">0 Hz</span></div>
+        <div class="stat-row"><span>MTU</span><span id="stMTU">--</span></div>
+        <div class="stat-row"><span>Device time (UTC)</span><span id="stDevTime">--</span></div>
+        <div class="stat-row"><span>Device samples total</span><span id="stDevTotal">--</span></div>
+        <div class="stat-row"><span>LSB Scale (Acc)</span><span id="stAccScale">--</span></div>
+        <div class="stat-row"><span>LSB Scale (Gyro)</span><span id="stGyrScale">--</span></div>
+        <div id="logArea"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h2>Live IMU Data</h2>
+        <div class="live-values">
+          <div class="ax-val"><div class="val-label">Acc X</div><div class="val-num"><span id="accX">0.000</span><span class="val-unit">g</span></div></div>
+          <div class="ay-val"><div class="val-label">Acc Y</div><div class="val-num"><span id="accY">0.000</span><span class="val-unit">g</span></div></div>
+          <div class="az-val"><div class="val-label">Acc Z</div><div class="val-num"><span id="accZ">0.000</span><span class="val-unit">g</span></div></div>
+          <div class="gx-val"><div class="val-label">Gyro X</div><div class="val-num"><span id="gyroX">0.0</span><span class="val-unit">dps</span></div></div>
+          <div class="gy-val"><div class="val-label">Gyro Y</div><div class="val-num"><span id="gyroY">0.0</span><span class="val-unit">dps</span></div></div>
+          <div class="gz-val"><div class="val-label">Gyro Z</div><div class="val-num"><span id="gyroZ">0.0</span><span class="val-unit">dps</span></div></div>
+        </div>
+        <canvas id="sparkline" width="600" height="180"></canvas>
+        <div style="text-align:center; font-size:11px; color:var(--text-dim); margin-top:6px;">
+          Rolling plot (separate scales): <span style="color:var(--info)">AccX</span> /
+          <span style="color:var(--accent)">AccY</span> / <span style="color:var(--warning)">AccZ</span>
+          &nbsp;·&nbsp; <span style="color:var(--danger)">GyroX</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">Requires Chrome / Edge on a secure context (HTTPS or localhost). Compatible with Android &amp; desktop.</div>
+</div>
+
+<script>
+// ─── BLE UUIDs (match the firmware) ──────────────────────────────
+const SERVICE_UUID   = '19b10000-e8f2-537e-4f6c-d104768a1214';
+const IMU_CHAR_UUID  = '19b10001-e8f2-537e-4f6c-d104768a1214';
+const CMD_CHAR_UUID  = '19b10002-e8f2-537e-4f6c-d104768a1214';
+const STATUS_CHAR_UUID = '19b10003-e8f2-537e-4f6c-d104768a1214';
+const FILE_CHAR_UUID   = '19b10004-e8f2-537e-4f6c-d104768a1214';
+
+// Command bytes
+const CMD_START = 0x01;
+const CMD_STOP  = 0x02;
+const CMD_SYNC  = 0x03;
+const CMD_LIST  = 0x04;
+const CMD_DLOAD = 0x05;
+const CMD_DABORT = 0x06;
+
+// ─── Wire format (must match IMU_SAMPLES_PER_PACKET/ImuHdr/ImuSample) ──
+// header (12 B): magic u16 | seq u16 | ts_ms u32 | dropped u16 | n_samples u8 | type u8
+// sample (14 B): ax,ay,az,gx,gy,gz int16 | rel_ms u16  (rel_ms is ms since ts_ms)
+const PKT_MAGIC   = 0xBEEF;
+const STATUS_MAGIC = 0xBEE5;
+const HDR_BYTES   = 12;
+const SAMPLE_BYTES = 14;
+
+// IMU scaling: firmware configures accel 4G and gyro 512dps
+const ACCEL_LSB_PER_G = 32768.0 / 4.0;
+const GYRO_LSB_PER_DPS = 32768.0 / 512.0;
+
+// ─── State ───────────────────────────────────────────────────────
+let device = null, server = null;
+let imuChar = null, cmdChar = null, statusChar = null, fileChar = null;
+
+let sessions = [];
+let connected = false;
+let recording = false;
+
+let lastSeq = -1;             // -1 = no baseline yet
+let totalPackets = 0, totalSamples = 0;
+let lostPackets = 0;          // whole packets missing (sequence gaps)
+let lostSamples = 0;          // samples missing inside packets (device counter)
+let lastDropCounter = null;   // previous value of the device drop counter
+
+// epoch_ms = devEpochBaseMs + ts_ms  (from the STATUS characteristic)
+let devEpochBaseMs = null;
+
+// Capture: pre-rendered CSV rows, ~1 MB/min instead of ~40 MB/min of objects.
+let captureRows = [];
+let captureCount = 0;
+let captureChars = 0;
+const CAPTURE_WARN_CHARS = 150 * 1024 * 1024;
+let captureWarned = false;
+const CSV_HEADER = 'utc_iso,ms_since_boot,raw_ax,raw_ay,raw_az,raw_gx,raw_gy,raw_gz,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps';
+
+// SD session download state
+let dlChunks = [];            // Uint8Array pieces, binary safe
+let dlBytes = 0;
+let dlSessName = '';
+let dlExpectSize = 0;
+let dlState = 'idle';         // idle | listing | downloading
+let dlTimer = null;
+const DL_STALL_MS = 5000;
+
+let lastRateTime = 0, samplesAtRate = 0, currentRate = 0;
+
+// Sparkline data
+const HIST_LEN = 240;
+const histData = { ax: [], ay: [], az: [], gx: [] };
+const sparkCanvas = document.getElementById('sparkline');
+let sparkCtx = sparkCanvas.getContext('2d');
+let lastDraw = 0;
+
+// ─── Logging ─────────────────────────────────────────────────────
+function log(msg, cls = '') {
+  const el = document.getElementById('logArea');
+  const line = document.createElement('div');
+  line.className = 'log-line ' + cls;
+  const now = new Date().toLocaleTimeString('en-IN');
+  line.textContent = `[${now}] ${msg}`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+  while (el.children.length > 60) el.removeChild(el.firstChild);
+}
+
+const $ = id => document.getElementById(id);
+
+function setStat(id, text, cls) {
+  const el = $(id);
+  el.textContent = text;
+  if (cls !== undefined) el.className = cls;
+}
+
+function updateUI() {
+  $('btnConnect').disabled = connected;
+  $('btnDisconnect').disabled = !connected;
+  $('btnRefresh').disabled = !connected;
+  $('btnStart').disabled = !connected || recording;
+  $('btnStop').disabled = !connected || !recording;
+  $('btnDownload').disabled = captureCount === 0;
+  $('btnList').disabled = !connected;
+  $('btnDl').disabled = !connected || sessions.length === 0 || dlState !== 'idle';
+  $('sessSelect').disabled = !connected || sessions.length === 0;
+
+  setStat('stSess', sessions.length);
+  setStat('stBle', connected ? 'Connected' : 'Disconnected');
+  setStat('stRec', recording ? 'ON' : 'OFF');
+  setStat('stCaptured', captureCount.toLocaleString());
+
+  const dot = $('statusDot'), txt = $('statusText');
+  if (connected) { dot.className = 'dot online'; txt.textContent = 'Connected'; }
+  else { dot.className = 'dot offline'; txt.textContent = 'Disconnected'; }
+}
+
+function isoUtc(epochMs) {
+  if (epochMs === null || epochMs === undefined) return '';
+  return new Date(epochMs).toISOString();
+}
+
+// ─── BLE Connection ──────────────────────────────────────────────
+async function connect() {
+  if (!navigator.bluetooth) {
+    log('Web Bluetooth not supported in this browser. Use Chrome/Edge on HTTPS/localhost.', 'err');
+    return;
+  }
+  try {
+    log('Requesting device...');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE_UUID] }],
+      optionalServices: [SERVICE_UUID]
+    });
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+    log(`Device selected: ${device.name || 'Unknown'}`, 'ok');
+
+    server = await device.gatt.connect();
+    connected = true;
+    updateUI();
+    log('GATT connected', 'ok');
+
+    const svc = await server.getPrimaryService(SERVICE_UUID);
+    imuChar     = await svc.getCharacteristic(IMU_CHAR_UUID);
+    cmdChar     = await svc.getCharacteristic(CMD_CHAR_UUID);
+    statusChar  = await svc.getCharacteristic(STATUS_CHAR_UUID);
+    fileChar    = await svc.getCharacteristic(FILE_CHAR_UUID);
+
+    imuChar.addEventListener('characteristicvaluechanged', onIMUData);
+    fileChar.addEventListener('characteristicvaluechanged', onFileData);
+
+    await imuChar.startNotifications();
+    await fileChar.startNotifications();
+    log('Notifications enabled (IMU + file)', 'ok');
+
+    try {
+      const mtur = await server.getMTU();
+      setStat('stMTU', mtur || '--');
+    } catch (e) { setStat('stMTU', '--'); }
+
+    await readStatus();
+    await syncTime();
+    await readStatus();
+  } catch (e) {
+    log(`Connect error: ${e.message}`, 'err');
+    connected = false;
+    updateUI();
+  }
+}
+
+function onDisconnected() {
+  log('Device disconnected', 'err');
+  connected = false;
+  recording = false;
+  imuChar = cmdChar = statusChar = fileChar = null;
+  resetStreamStats();
+  clearDlTimer();
+  dlState = 'idle';
+  sessions = [];
+  renderSessions();
+  updateUI();
+}
+
+// Start a new stream accounting window (also on every new recording, because
+// the device restarts seq at 0 and a stale baseline looks like ~60k lost).
+function resetStreamStats() {
+  lastSeq = -1;
+  lastDropCounter = null;
+  totalPackets = 0;
+  totalSamples = 0;
+  lostPackets = 0;
+  lostSamples = 0;
+  histData.ax.length = 0; histData.ay.length = 0;
+  histData.az.length = 0; histData.gx.length = 0;
+}
+
+async function disconnect() {
+  try {
+    if (connected) {
+      if (recording) await sendCommand(CMD_STOP);
+      if (imuChar) { try { await imuChar.stopNotifications(); } catch (e) {} }
+      if (fileChar) { try { await fileChar.stopNotifications(); } catch (e) {} }
+      if (server && server.connected) server.disconnect();
+    }
+  } catch (e) { log(`Disconnect error: ${e.message}`, 'err'); }
+  connected = false;
+  recording = false;
+  updateUI();
+}
+
+// Returns whether the device actually accepted the command. A failed write
+// used to be logged and then ignored, so startRecording() went on to print
+// "Recording started" while the device had rec=0 and was logging nothing —
+// the UI and the hardware disagreed with no way to tell which was right.
+async function sendCommand(cmd, extra) {
+  if (!cmdChar) return false;
+  const payload = [cmd];
+  if (extra !== undefined) for (const b of extra) payload.push(b);
+  try {
+    await cmdChar.writeValueWithoutResponse(new Uint8Array(payload));
+    return true;
+  } catch (e) {
+    log(`Write failed: ${e.message}`, 'err');
+    // Retry with a response. writeValueWithoutResponse is a fire-and-forget
+    // write, so a rejection here can mean the ATT request was never built
+    // rather than that the device rejected it.
+    try {
+      await cmdChar.writeValue(new Uint8Array(payload));
+      log('Command accepted on retry', 'warn');
+      return true;
+    } catch (e2) {
+      log(`Command 0x${cmd.toString(16)} not delivered: ${e2.message}`, 'err');
+      return false;
+    }
+  }
+}
+
+// Send current epoch time (UTC seconds) as 4-byte LE payload after CMD_SYNC
+async function syncTime() {
+  const epoch = Math.floor(Date.now() / 1000);
+  const buf = new Uint8Array(5);
+  const dv = new DataView(buf.buffer);
+  dv.setUint8(0, CMD_SYNC);
+  dv.setUint32(1, epoch, true);
+  try {
+    await cmdChar.writeValueWithoutResponse(buf);
+    log(`Sent time: epoch=${epoch}`, 'ok');
+  } catch (e) {
+    log(`Time sync failed: ${e.message}`, 'err');
+  }
+}
+
+// STATUS: magic u16 | flags u16 | epoch_s u32 | millis u32 | total u32
+async function readStatus() {
+  if (!statusChar) return;
+  try {
+    const v = await statusChar.readValue();
+    if (v.byteLength < 16) { log(`Status too short (${v.byteLength} B)`, 'err'); return; }
+    if (v.getUint16(0, true) !== STATUS_MAGIC) { log('Status bad magic', 'err'); return; }
+    const flags = v.getUint16(2, true);
+    const epochS = v.getUint32(4, true);
+    const millis = v.getUint32(8, true);
+    const total = v.getUint32(12, true);
+    setStat('stDevTotal', total.toLocaleString());
+    if (flags & 0x0001) {
+      devEpochBaseMs = epochS * 1000 - millis;   // epoch_ms = base + ts_ms
+      setStat('stDevTime', isoUtc(epochS * 1000).replace('T', ' ').slice(0, 19) + ' UTC');
+    } else {
+      setStat('stDevTime', 'not set (sync time)');
+    }
+  } catch (e) {
+    log(`Status read failed: ${e.message}`, 'err');
+  }
+}
+
+// ─── IMU Data Parsing ────────────────────────────────────────────
+function onIMUData(event) {
+  try { handleIMUData(event); }
+  catch (e) { log(`Parse error: ${e.message}`, 'err'); }
+}
+
+function handleIMUData(event) {
+  const dv = event.target.value;
+  if (dv.byteLength < HDR_BYTES) { log(`Short packet (${dv.byteLength} B)`, 'err'); return; }
+
+  const magic = dv.getUint16(0, true);
+  if (magic !== PKT_MAGIC) { log(`Bad magic 0x${magic.toString(16)}`, 'err'); return; }
+
+  const seq       = dv.getUint16(2, true);
+  const tsMs      = dv.getUint32(4, true);
+  const dropped   = dv.getUint16(8, true);
+  const nSamples  = dv.getUint8(10);
+  const pktType   = dv.getUint8(11);
+
+  if (pktType !== 0x01) { log(`Unexpected pkt_type ${pktType}`, 'err'); return; }
+
+  // Structural check before trusting any offset arithmetic.
+  const avail = dv.byteLength - HDR_BYTES;
+  if (nSamples * SAMPLE_BYTES !== avail) {
+    log(`Malformed packet: n=${nSamples} needs ${nSamples * SAMPLE_BYTES} B, have ${avail} B`, 'err');
+    return;
+  }
+
+  totalPackets++;
+
+  if (lastSeq >= 0) {
+    const delta = (seq - lastSeq + 65536) % 65536;
+    // The device zeroes seq at a session start and again when a client first
+    // subscribes. A backwards jump past the halfway point is that counter
+    // reset, not 65000 lost packets: at ~25 packets/s, 32768 packets is over
+    // 20 minutes of continuous link time, so it cannot be real loss. Without
+    // this the loss counter jumps by ~65000 every time recording starts.
+    if (delta > 32768) {
+      log('Sequence reset detected, resyncing', 'warn');
+    } else if (delta > 1) lostPackets += (delta - 1);
+    else if (delta === 0) log('Duplicate sequence number', 'err');
+  }
+  lastSeq = seq;
+
+  // Device-side drop counter (cumulative, 16-bit). Its delta is the only way
+  // to see samples lost inside the ring, which sequence gaps cannot reveal.
+  if (lastDropCounter !== null) {
+    const d = (dropped - lastDropCounter + 65536) % 65536;
+    if (d > 0) lostSamples += d;
+  }
+  lastDropCounter = dropped;
+
+  let off = HDR_BYTES;
+  for (let i = 0; i < nSamples; i++) {
+    const ax = dv.getInt16(off, true);
+    const ay = dv.getInt16(off + 2, true);
+    const az = dv.getInt16(off + 4, true);
+    const gx = dv.getInt16(off + 6, true);
+    const gy = dv.getInt16(off + 8, true);
+    const gz = dv.getInt16(off + 10, true);
+    const relMs = dv.getUint16(off + 12, true);
+    off += SAMPLE_BYTES;
+
+    // Real per-sample timestamp straight from the device. Never synthesise
+    // this as ts + i*period: that is wrong as soon as one sample is dropped,
+    // and the drop is invisible in the packet.
+    const ts = tsMs + relMs;
+
+    const af = ax / ACCEL_LSB_PER_G, ag = ay / ACCEL_LSB_PER_G, ah = az / ACCEL_LSB_PER_G;
+    const gf = gx / GYRO_LSB_PER_DPS, gg = gy / GYRO_LSB_PER_DPS, gh = gz / GYRO_LSB_PER_DPS;
+
+    setStat('accX', af.toFixed(3)); setStat('accY', ag.toFixed(3)); setStat('accZ', ah.toFixed(3));
+    setStat('gyroX', gf.toFixed(2)); setStat('gyroY', gg.toFixed(2)); setStat('gyroZ', gh.toFixed(2));
+
+    histData.ax.push(af); histData.ay.push(ag); histData.az.push(ah); histData.gx.push(gf);
+    if (histData.ax.length > HIST_LEN) {
+      histData.ax.shift(); histData.ay.shift(); histData.az.shift(); histData.gx.shift();
+    }
+
+    totalSamples++;
+    if (recording) captureSample(ts, ax, ay, az, gx, gy, gz);
+  }
+
+  const nowMs = performance.now();
+  if (nowMs - lastRateTime >= 1000) {
+    currentRate = samplesAtRate;
+    samplesAtRate = 0;
+    lastRateTime = nowMs;
+  }
+  samplesAtRate += nSamples;
+
+  setStat('stSamples', totalSamples.toLocaleString());
+  setStat('stPackets', totalPackets.toLocaleString());
+  setStat('stLost', lostPackets.toLocaleString());
+  setStat('stDropped', lostSamples.toLocaleString(),
+          lostSamples > 0 ? 'warn' : 'good');
+  setStat('stRate', currentRate + ' Hz');
+  const lossPct = totalPackets > 0 ? (lostPackets / (lostPackets + totalPackets) * 100) : 0;
+  setStat('stLossPct', lossPct.toFixed(2) + ' %',
+          lossPct > 5 ? 'bad' : (lossPct > 1 ? 'warn' : 'good'));
+  if (recording) setStat('stCaptured', captureCount.toLocaleString());
+
+  if (nowMs - lastDraw > 40) { lastDraw = nowMs; drawSparkline(); }
+}
+
+function captureSample(ts, ax, ay, az, gx, gy, gz) {
+  // The comma is always emitted, even when the device clock is unknown, so
+  // every row keeps the same column count as CSV_HEADER.
+  const utc = (devEpochBaseMs !== null) ? isoUtc(devEpochBaseMs + ts) : '';
+  const row = utc + ',' +
+    ts + ',' + ax + ',' + ay + ',' + az + ',' + gx + ',' + gy + ',' + gz + ',' +
+    (ax / ACCEL_LSB_PER_G).toFixed(5) + ',' + (ay / ACCEL_LSB_PER_G).toFixed(5) + ',' +
+    (az / ACCEL_LSB_PER_G).toFixed(5) + ',' + (gx / GYRO_LSB_PER_DPS).toFixed(5) + ',' +
+    (gy / GYRO_LSB_PER_DPS).toFixed(5) + ',' + (gz / GYRO_LSB_PER_DPS).toFixed(5);
+  captureRows.push(row);
+  captureCount++;
+  captureChars += row.length + 1;
+  if (!captureWarned && captureChars > CAPTURE_WARN_CHARS) {
+    captureWarned = true;
+    log(`Capture buffer large (${(captureChars / 1048576).toFixed(0)} MB). Download and clear soon.`, 'err');
+  }
+}
+
+// ─── Recording Controls ──────────────────────────────────────────
+async function startRecording() {
+  captureRows = [];
+  captureCount = 0;
+  captureChars = 0;
+  captureWarned = false;
+  resetStreamStats();
+  // Only claim success if the device confirmed the write. Otherwise the rows
+  // would be captured against a device that is not recording, and the
+  // discrepancy is invisible from the phone.
+  const ok = await sendCommand(CMD_START);
+  if (!ok) {
+    log('Start command was NOT delivered - device is not recording', 'err');
+    updateUI();
+    return;
+  }
+  recording = true;
+  updateUI();
+  log('Recording started (streaming to device + SD card)', 'ok');
+}
+
+async function stopRecording() {
+  await sendCommand(CMD_STOP);
+  recording = false;
+  updateUI();
+  log(`Recording stopped. Captured ${captureCount.toLocaleString()} samples in browser.`, 'ok');
+}
+
+// ─── CSV Download ────────────────────────────────────────────────
+function saveBlob(name, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name.endsWith('.csv') ? name : name + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // Revoking immediately can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+function downloadCSV() {
+  if (captureCount === 0) { log('No captured data to download', 'err'); return; }
+  const stamp = new Date().toISOString().replace(/[:T]/g, '-').substr(0, 19);
+  const blob = new Blob(['\ufeff' + CSV_HEADER + '\n' + captureRows.join('\n')],
+                        { type: 'text/csv;charset=utf-8;' });
+  saveBlob(`imu_data_${stamp}.csv`, blob);
+  log(`CSV downloaded: ${captureCount.toLocaleString()} samples`, 'ok');
+}
+
+// ─── SD Session Listing / Download ───────────────────────────────
+function renderSessions() {
+  const sel = $('sessSelect');
+  sel.innerHTML = '';
+  if (sessions.length === 0) {
+    const o = document.createElement('option');
+    o.textContent = 'No sessions found';
+    sel.appendChild(o);
+    return;
+  }
+  for (const s of sessions) {
+    const opt = document.createElement('option');
+    opt.value = s.idx;
+    opt.textContent = `${s.name} (${s.size.toLocaleString()} bytes)`;
+    sel.appendChild(opt);
+  }
+}
+
+function clearDlTimer() { if (dlTimer) { clearTimeout(dlTimer); dlTimer = null; } }
+
+function armDlTimer() {
+  clearDlTimer();
+  dlTimer = setTimeout(async () => {
+    if (dlState !== 'downloading') return;
+    log('Download stalled (5 s with no data), aborting', 'err');
+    await sendCommand(CMD_DABORT);
+    resetDl();
+    updateUI();
+  }, DL_STALL_MS);
+}
+
+function resetDl() {
+  clearDlTimer();
+  dlChunks = [];
+  dlBytes = 0;
+  dlSessName = '';
+  dlExpectSize = 0;
+  $('dlBar').style.width = '0%';
+}
+
+async function listSessions() {
+  if (!cmdChar) { log('Not connected', 'err'); return; }
+  sessions = [];
+  dlState = 'listing';
+  renderSessions();
+  updateUI();
+  log('Requesting session list...');
+  await sendCommand(CMD_LIST);
+}
+
+async function downloadSession() {
+  if (!cmdChar) { log('Not connected', 'err'); return; }
+  const sel = $('sessSelect');
+  if (sel.selectedIndex < 0) { log('No session selected', 'err'); return; }
+  const idx = Number(sel.value);
+  resetDl();
+  dlState = 'downloading';
+  updateUI();
+  armDlTimer();
+  log(`Requesting download of session ${idx}...`);
+  await sendCommand(CMD_DLOAD, [idx]);
+}
+
+// FILE frames are "<TAG>[,args]\n<optional raw bytes>". Only the ASCII head is
+// decoded; "D," chunks keep their raw bytes so CSV content survives intact.
+function onFileData(event) {
+  try { handleFileData(event); }
+  catch (e) { log(`File parse error: ${e.message}`, 'err'); }
+}
+
+function handleFileData(event) {
+  const dv = event.target.value;
+  const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+  if (bytes.length === 0) return;
+
+  const head = new TextDecoder('ascii').decode(bytes.subarray(0, 48));
+  const comma = head.indexOf(',');
+  const tag = (comma < 0 ? head : head.slice(0, comma)).trim();
+  const args = comma < 0 ? [] : head.slice(comma + 1).split(',');
+
+  if (dlState === 'listing') {
+    if (tag === 'DLIST_START') {
+      sessions = [];
+    } else if (tag === 'FSESS') {
+      sessions.push({ idx: Number(args[0]), name: args[1], size: Number(args[2]) });
+    } else if (tag === 'DLIST_END') {
+      dlState = 'idle';
+      renderSessions();
+      log(`Found ${sessions.length} session(s) on SD`, 'ok');
+      updateUI();
+    }
+    return;
+  }
+
+  if (dlState !== 'downloading') return;
+
+  if (tag === 'DFILE_START') {
+    resetDl();
+    dlSessName = args[1];
+    dlExpectSize = Number(args[2]);
+    log(`Downloading ${dlSessName} (${dlExpectSize.toLocaleString()} bytes)...`);
+  } else if (tag === 'D') {
+    armDlTimer();
+    dlChunks.push(bytes.slice(2));          // strip the "D," tag
+    dlBytes += bytes.length - 2;
+    if (dlExpectSize > 0) {
+      $('dlBar').style.width = Math.min(100, (dlBytes / dlExpectSize) * 100).toFixed(1) + '%';
+    }
+  } else if (tag === 'DFILE_END') {
+    const idx = Number(args[0]), chunks = Number(args[1]);
+    clearDlTimer();
+    if (dlExpectSize === 0 || dlBytes === dlExpectSize) {
+      saveBlob(dlSessName, new Blob(dlChunks, { type: 'text/csv;charset=utf-8;' }));
+      log(`Session ${idx} complete (${chunks} chunks, ${dlBytes.toLocaleString()} bytes)`, 'ok');
+    } else {
+      log(`INCOMPLETE: got ${dlBytes.toLocaleString()} of ${dlExpectSize.toLocaleString()} bytes (${chunks} chunks)`, 'err');
+    }
+    dlState = 'idle';
+    resetDl();
+    updateUI();
+  } else if (tag === 'ABORT') {
+    clearDlTimer();
+    log(`Download aborted by device after ${args[1]} chunks`, 'err');
+    dlState = 'idle';
+    resetDl();
+    updateUI();
+  } else if (tag === 'ERR') {
+    clearDlTimer();
+    log(`Device error: ${args.join(',')}`, 'err');
+    dlState = 'idle';
+    resetDl();
+    updateUI();
+  }
+}
+
+// ─── Sparkline Drawing ───────────────────────────────────────────
+function drawSparkline() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = sparkCanvas.clientWidth, h = sparkCanvas.clientHeight;
+  if (!w || !h) return;
+  if (sparkCanvas.width !== Math.round(w * dpr) || sparkCanvas.height !== Math.round(h * dpr)) {
+    sparkCanvas.width = Math.round(w * dpr);
+    sparkCanvas.height = Math.round(h * dpr);
+  }
+  const ctx = sparkCtx;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (histData.ax.length < 2) return;
+
+  // Two independent scales: g (±4) and dps (±512) on one axis would flatten
+  // the accelerometer traces into a line at zero.
+  const groups = [
+    { color: '#3aa0ff', keys: ['ax', 'ay', 'az'], scale: ACCEL_LSB_PER_G / 32768 * 8 },
+    { color: '#ff4d4d', keys: ['gx'], scale: 200 }
+  ];
+  const n = HIST_LEN;
+
+  for (const grp of groups) {
+    let min = Infinity, max = -Infinity;
+    for (const k of grp.keys) {
+      for (const v of histData[k]) { if (v < min) min = v; if (v > max) max = v; }
+    }
+    if (!isFinite(min)) continue;
+    // Auto-range with headroom, floored so a still sensor does not amplify noise.
+    const pad = Math.max((max - min) * 0.15, 0.05);
+    min -= pad; max += pad;
+    grp.min = min; grp.max = max;
+
+    for (const k of grp.keys) {
+      const data = histData[k];
+      ctx.beginPath();
+      ctx.strokeStyle = (k === 'ax') ? '#3aa0ff' : (k === 'ay') ? '#00e58f'
+                       : (k === 'az') ? '#ffb020' : '#ff4d4d';
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < data.length; i++) {
+        const x = (i / (n - 1)) * w;
+        const y = h - ((data[i] - grp.min) / (grp.max - grp.min)) * h;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  }
+
+  ctx.strokeStyle = '#2a3a4a';
+  ctx.lineWidth = 0.5;
+  for (let i = 1; i < 4; i++) {
+    ctx.beginPath();
+    ctx.moveTo(0, (h / 4) * i);
+    ctx.lineTo(w, (h / 4) * i);
+    ctx.stroke();
+  }
+}
+
+window.addEventListener('resize', drawSparkline);
+
+// ─── Button wiring ───────────────────────────────────────────────
+$('btnConnect').addEventListener('click', connect);
+$('btnDisconnect').addEventListener('click', disconnect);
+$('btnRefresh').addEventListener('click', async () => {
+  await syncTime();
+  await readStatus();
+  log('Data refreshed');
+});
+$('btnStart').addEventListener('click', startRecording);
+$('btnStop').addEventListener('click', stopRecording);
+$('btnDownload').addEventListener('click', downloadCSV);
+$('btnList').addEventListener('click', listSessions);
+$('btnDl').addEventListener('click', downloadSession);
+
+setStat('stAccScale', ACCEL_LSB_PER_G.toFixed(0) + ' LSB/g (4G)');
+setStat('stGyrScale', GYRO_LSB_PER_DPS.toFixed(2) + ' LSB/dps (512dps)');
+renderSessions();
+updateUI();
+log('Ready. Click Connect to pair with the ESP32-S3 (http://localhost or HTTPS required).');
+</script>
+</body>
+</html>
