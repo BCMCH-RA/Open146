@@ -16,7 +16,7 @@ typedef struct {
 } Biquad_t;
 
 typedef struct {
-    Biquad_t stage1, stage2;
+    Biquad_t stage[TREMOR_STAGES];
 } Cascade_t;
 
 static Cascade_t s_cX, s_cY, s_cZ;
@@ -24,15 +24,30 @@ static Cascade_t s_cX, s_cY, s_cZ;
 // EMA state. Touched only by the IMU task (Core 1), so no volatility needed.
 static float s_severityMS = 0.0f;
 
+// EMA of the total (unfiltered) gyro magnitude squared, feeding the narrowband
+// ratio. Same alpha as s_severityMS so the two stay directly comparable.
+static float s_totalMS = 0.0f;
+
 // Published for the display task (Core 0). Each is naturally aligned and 32
 // bits or narrower, so a plain volatile read is atomic and cannot tear — this
 // is what the old window-flag scheme was avoiding.
 static volatile float    s_severity  = 0.0f;
 static volatile uint8_t  s_level     = TREMOR_CALM;
 static volatile uint32_t s_sampleSeq = 0;
+static volatile float    s_ratio     = 1.0f;
+
+// Dwell state, owned by the IMU task alongside s_level. s_cand is the band
+// currently being confirmed; s_dwell counts how many consecutive samples
+// Band_Decide has agreed with it. s_level only moves once s_dwell is met.
+static TremorLevel_t s_cand  = TREMOR_CALM;
+static uint32_t      s_dwell = 0;
 
 // Only displayTask calls Tremor_Metric_Get(), so this needs no protection.
 static uint32_t s_lastGetSeq = 0;
+// GetNarrowband() is polled on the same schedule and must not steal the
+// sequence stamp from Get(), or the level would look stale to whoever asked
+// second.
+static uint32_t s_lastRatioSeq = 0;
 
 
 static void Biquad_Design(Biquad_t *b, float al, float cs) {
@@ -68,7 +83,8 @@ static inline float Biquad_Step(Biquad_t *b, float x) {
 
 
 static inline float Cascade_Step(Cascade_t *c, float x) {
-    return Biquad_Step(&c->stage2, Biquad_Step(&c->stage1, x));
+    for (int i = 0; i < TREMOR_STAGES; i++) x = Biquad_Step(&c->stage[i], x);
+    return x;
 }
 
 
@@ -109,31 +125,42 @@ static void Tremor_FiltersInit(void) {
         const float rlo = Biquad_Mag(&s, cwl, swl, cwl2, swl2) / peak;
         const float rhi = Biquad_Mag(&s, cwh, swh, cwh2, swh2) / peak;
         // r is ONE stage's gain ratio; TREMOR_STAGES of them cascade, so the
-        // ratio this filter actually delivers is r*r. Halving it is what
-        // targets 1/sqrt(2) on the cascade rather than on a single stage.
-        if (0.5f * (rlo * rlo + rhi * rhi) > 0.70710678f) qlo = q;  // too wide
-        else                                                    qhi = q;
+        // ratio this filter actually delivers is r^TREMOR_STAGES. Raising the
+        // cascade to that power is what targets 1/sqrt(2) on the cascade rather
+        // than on a single stage, and it is what lets the skirt steepness be
+        // changed by editing TREMOR_STAGES alone.
+        const float clo = powf(rlo, (float)TREMOR_STAGES);
+        const float chi = powf(rhi, (float)TREMOR_STAGES);
+        if (0.5f * (clo + chi) > 0.70710678f) qlo = q;  // too wide
+        else                                    qhi = q;
     }
 
     const float q = 0.5f * (qlo + qhi);
     Biquad_Design(&s, sw0 / (2.0f * q), cw0);
     const float peak = Biquad_Mag(&s, cw0, sw0, cw02, sw02);
-    s.b0 /= peak;                               // cascade is now unity at f0
-    s.b2 /= peak;
+    s.b0 /= peak;                               // each stage is unity at f0
+    s.b2 /= peak;                               // so the cascade is too
 
-    s_cX.stage1 = s; s_cX.stage2 = s;
-    s_cY.stage1 = s; s_cY.stage2 = s;
-    s_cZ.stage1 = s; s_cZ.stage2 = s;
+    for (int i = 0; i < TREMOR_STAGES; i++) {
+        s_cX.stage[i] = s;
+        s_cY.stage[i] = s;
+        s_cZ.stage[i] = s;
+    }
 }
 
 
 void Tremor_Metric_Init(void) {
     Tremor_FiltersInit();
-    s_severityMS = 0.0f;
-    s_severity   = 0.0f;
-    s_level      = TREMOR_CALM;
-    s_sampleSeq  = 0;
-    s_lastGetSeq = 0;
+    s_severityMS   = 0.0f;
+    s_totalMS      = 0.0f;
+    s_severity     = 0.0f;
+    s_level        = TREMOR_CALM;
+    s_sampleSeq    = 0;
+    s_lastGetSeq   = 0;
+    s_lastRatioSeq = 0;
+    s_ratio        = 1.0f;
+    s_cand         = TREMOR_CALM;
+    s_dwell        = 0;
 }
 
 
@@ -163,6 +190,52 @@ static TremorLevel_t Band_Decide(TremorLevel_t cur, float sev) {
 }
 
 
+// Samples of sustained evidence needed to move between two bands. Escalation is
+// quick because under-reporting a worsening tremor is the costly error;
+// relaxation is slow because a label that drops the instant a tremor pauses
+// flickers.
+static uint32_t Dwell_Needs(TremorLevel_t from, TremorLevel_t to) {
+    const float secs = (to > from) ? TREMOR_DWELL_ESCALATE_S : TREMOR_DWELL_DEESCALATE_S;
+    uint32_t n = (uint32_t)(secs * TREMOR_SAMPLE_RATE_HZ + 0.5f);
+    return n ? n : 1u;
+}
+
+// Confirm-then-commit. Band_Decide says which band the evidence supports RIGHT
+// NOW; this only lets the displayed level follow once that answer has repeated
+// for the dwell time. Because the answer is re-derived from the current level
+// each sample, a walk from CALM to SEVERE still advances one band per dwell
+// period rather than snapping to the top.
+//
+// narrow is the fraction of the signal that survived the band-pass. While it
+// says the motion is broadband rather than a tremor, escalation is frozen: the
+// severity number is still published so the UI can show it, but the label will
+// not climb until the evidence looks like tremor. De-escalation is never gated,
+// so a movement burst cannot pull the label down either.
+static void Level_Update(float sev, float narrow) {
+    const TremorLevel_t cur  = (TremorLevel_t)s_level;
+    TremorLevel_t want = Band_Decide(cur, sev);
+
+    if (want > cur && narrow < TREMOR_NARROWBAND_MIN) {
+        want = cur;                 // movement, not tremor: hold the label
+    }
+    if (want == cur) {              // evidence gone or back inside the band
+        s_cand  = cur;
+        s_dwell = 0;
+        return;
+    }
+    if (want != s_cand) {           // first sample of a new candidate
+        s_cand  = want;
+        s_dwell = 0;
+        return;
+    }
+    if (++s_dwell >= Dwell_Needs(cur, want)) {
+        s_level = (uint8_t)want;
+        s_cand  = want;
+        s_dwell = 0;
+    }
+}
+
+
 void Tremor_Metric_Feed(float gx_dps, float gy_dps, float gz_dps) {
     const float fx = Cascade_Step(&s_cX, gx_dps);
     const float fy = Cascade_Step(&s_cY, gy_dps);
@@ -173,8 +246,22 @@ void Tremor_Metric_Feed(float gx_dps, float gy_dps, float gz_dps) {
 
     const float sev = sqrtf(s_severityMS);
 
+    // Narrowband ratio. Both magnitudes pass through the same EMA, so the
+    // common 1/sqrt(2) RMS factor cancels and the ratio is just the cascade's
+    // |H| at the dominant frequency: ~1 inside 4..12 Hz, falling away on the
+    // skirts.
+    const float totalSq = gx_dps * gx_dps + gy_dps * gy_dps + gz_dps * gz_dps;
+    s_totalMS = TREMOR_EMA_ALPHA * totalSq + (1.0f - TREMOR_EMA_ALPHA) * s_totalMS;
+
+    // At true rest the denominator is sensor noise, and dividing by it would
+    // yield a meaningless ratio. Rest has no movement to reject, so the gate is
+    // simply not applied there; severity is near zero regardless, so nothing
+    // can escalate on this path.
+    const float narrow = (s_totalMS > 1e-3f) ? sqrtf(s_severityMS / s_totalMS) : 1.0f;
+
     s_severity  = sev;
-    s_level     = (uint8_t)Band_Decide((TremorLevel_t)s_level, sev);
+    s_ratio     = narrow;
+    Level_Update(sev, narrow);
     s_sampleSeq++;
 }
 
@@ -185,6 +272,15 @@ bool Tremor_Metric_Get(TremorLevel_t *out_level, float *out_severity_dps) {
     s_lastGetSeq = seq;
     if (out_level)        *out_level = (TremorLevel_t)s_level;
     if (out_severity_dps) *out_severity_dps = s_severity;
+    return true;
+}
+
+
+bool Tremor_Metric_GetNarrowband(float *out_ratio) {
+    const uint32_t seq = s_sampleSeq;
+    if (seq == s_lastRatioSeq) return false;
+    s_lastRatioSeq = seq;
+    if (out_ratio) *out_ratio = s_ratio;
     return true;
 }
 
